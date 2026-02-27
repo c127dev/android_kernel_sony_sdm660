@@ -1193,8 +1193,13 @@ static void binder_do_set_priority(struct binder_thread *thread,
 	unsigned int policy = desired->sched_policy;
 	struct task_struct *task = thread->task;
 
-	if (task->policy == policy && task->normal_prio == desired->prio)
+	if (task->policy == policy && task->normal_prio == desired->prio) {
+		spin_lock(&thread->prio_lock);
+		if (thread->prio_state == BINDER_PRIO_PENDING)
+			thread->prio_state = BINDER_PRIO_SET;
+		spin_unlock(&thread->prio_lock);
 		return;
+	}
 
 	has_cap_nice = has_capability_noaudit(task, CAP_SYS_NICE);
 
@@ -1298,8 +1303,8 @@ static void binder_transaction_priority(struct binder_thread *thread,
 		desired_prio.sched_policy = SCHED_NORMAL;
 	}
 
-	if (node_prio.prio < t->priority.prio ||
-	    (node_prio.prio == t->priority.prio &&
+	if (node_prio.prio < desired_prio.prio ||
+	    (node_prio.prio == desired_prio.prio &&
 	     node_prio.sched_policy == SCHED_FIFO)) {
 		/*
 		 * In case the minimum priority on the node is
