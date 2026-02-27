@@ -1175,19 +1175,19 @@ static int to_kernel_prio(int policy, int user_priority)
 }
 
 static void binder_do_set_priority(struct task_struct *task,
-				   struct binder_priority desired,
+				   const struct binder_priority *desired,
 				   bool verify)
 {
 	int priority; /* user-space prio value */
 	bool has_cap_nice;
-	unsigned int policy = desired.sched_policy;
+	unsigned int policy = desired->sched_policy;
 
-	if (task->policy == policy && task->normal_prio == desired.prio)
+	if (task->policy == policy && task->normal_prio == desired->prio)
 		return;
 
 	has_cap_nice = has_capability_noaudit(task, CAP_SYS_NICE);
 
-	priority = to_userspace_prio(policy, desired.prio);
+	priority = to_userspace_prio(policy, desired->prio);
 
 	if (verify && is_rt_policy(policy) && !has_cap_nice) {
 		long max_rtprio = task_rlimit(task, RLIMIT_RTPRIO);
@@ -1212,16 +1212,16 @@ static void binder_do_set_priority(struct task_struct *task,
 		}
 	}
 
-	if (policy != desired.sched_policy ||
-	    to_kernel_prio(policy, priority) != desired.prio)
+	if (policy != desired->sched_policy ||
+	    to_kernel_prio(policy, priority) != desired->prio)
 		binder_debug(BINDER_DEBUG_PRIORITY_CAP,
 			     "%d: priority %d not allowed, using %d instead\n",
-			      task->pid, desired.prio,
+			      task->pid, desired->prio,
 			      to_kernel_prio(policy, priority));
 
 	trace_binder_set_priority(task->tgid, task->pid, task->normal_prio,
 				  to_kernel_prio(policy, priority),
-				  desired.prio);
+				  desired->prio);
 
 	/* Set the actual priority */
 	if (task->policy != policy || is_rt_policy(policy)) {
@@ -1238,13 +1238,13 @@ static void binder_do_set_priority(struct task_struct *task,
 }
 
 static void binder_set_priority(struct task_struct *task,
-				struct binder_priority desired)
+				const struct binder_priority *desired)
 {
 	binder_do_set_priority(task, desired, /* verify = */ true);
 }
 
 static void binder_restore_priority(struct task_struct *task,
-				    struct binder_priority desired)
+				    const struct binder_priority *desired)
 {
 	binder_do_set_priority(task, desired, /* verify = */ false);
 }
@@ -1284,7 +1284,7 @@ static void binder_transaction_priority(struct task_struct *task,
 		desired_prio = node_prio;
 	}
 
-	binder_set_priority(task, desired_prio);
+	binder_set_priority(task, &desired_prio);
 }
 
 static struct binder_node *binder_get_node_ilocked(struct binder_proc *proc,
@@ -3654,7 +3654,7 @@ static void binder_transaction(struct binder_proc *proc,
 		binder_inner_proc_unlock(target_proc);
 
 		wake_up_interruptible_sync(&target_thread->wait);
-		binder_restore_priority(current, in_reply_to->saved_priority);
+		binder_restore_priority(current, &in_reply_to->saved_priority);
 		binder_free_transaction(in_reply_to);
 	} else if (!(t->flags & TF_ONE_WAY)) {
 		BUG_ON(t->buffer->async_transaction != 0);
@@ -3766,7 +3766,7 @@ err_invalid_target_handle:
 
 	BUG_ON(thread->return_error.cmd != BR_OK);
 	if (in_reply_to) {
-		binder_restore_priority(current, in_reply_to->saved_priority);
+		binder_restore_priority(current, &in_reply_to->saved_priority);
 		thread->return_error.cmd = BR_TRANSACTION_COMPLETE;
 		binder_enqueue_thread_work(thread, &thread->return_error.work);
 		binder_send_failed_reply(in_reply_to, return_error);
@@ -4353,7 +4353,7 @@ retry:
 			wait_event_interruptible(binder_user_error_wait,
 						 binder_stop_on_user_error < 2);
 		}
-		binder_restore_priority(current, proc->default_priority);
+		binder_restore_priority(current, &proc->default_priority);
 	}
 
 	if (non_block) {
