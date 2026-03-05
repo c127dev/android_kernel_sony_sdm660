@@ -413,6 +413,22 @@ int wlan_hdd_ipv4_changed(struct notifier_block *nb,
 int wlan_hdd_pm_qos_notify(struct notifier_block *nb, unsigned long curr_val,
 			   void *context);
 #endif
+
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+/**
+ * wlan_hdd_fb_notify() - Framebuffer notifier callback
+ * @nb: Pointer to notifier block
+ * @action: Framebuffer event type (FB_EVENT_BLANK, etc.)
+ * @data: Pointer to fb_event structure
+ *
+ * Listens for FB_EVENT_BLANK. On FB_BLANK_UNBLANK (screen on) disables BMPS
+ * power save; on FB_BLANK_POWERDOWN (screen off) re-enables it.
+ *
+ * Return: NOTIFY_OK on success, NOTIFY_DONE otherwise
+ */
+int wlan_hdd_fb_notify(struct notifier_block *nb, unsigned long action,
+		       void *data);
+#endif
 /**
  * wlan_hdd_ipv6_changed() - IPv6 change notifier callback
  * @nb: pointer to notifier block

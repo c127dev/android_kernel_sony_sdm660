@@ -1876,6 +1876,11 @@ struct hdd_context {
 	bool runtime_pm_prevented;
 	qdf_spinlock_t pm_qos_lock;
 #endif
+
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+	/* Framebuffer notifier for toggling BMPS on screen blank/unblank */
+	struct notifier_block fb_notifier;
+#endif
 	/* number of rf chains supported by target */
 	uint32_t  num_rf_chains;
 	/* Is htTxSTBC supported by target */

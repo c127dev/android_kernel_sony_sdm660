@@ -58,6 +58,9 @@
 #include "qdf_debug_domain.h"
 #endif
 #include "qdf_delayed_work.h"
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+#include <linux/fb.h>
+#endif
 #include "qdf_periodic_work.h"
 #include "qdf_str.h"
 #include "qdf_talloc.h"
@@ -3454,8 +3457,21 @@ static int hdd_register_notifiers(struct hdd_context *hdd_ctx)
 		goto unregister_inetaddr_notifier;
 	}
 
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+	hdd_ctx->fb_notifier.notifier_call = wlan_hdd_fb_notify;
+	ret = fb_register_client(&hdd_ctx->fb_notifier);
+	if (ret) {
+		hdd_err("Failed to register FB notifier: %d", ret);
+		goto unregister_netevent;
+	}
+#endif
+
 	return 0;
 
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+unregister_netevent:
+	hdd_nud_unregister_netevent_notifier(hdd_ctx);
+#endif
 unregister_inetaddr_notifier:
 	unregister_inetaddr_notifier(&hdd_ctx->ipv4_notifier);
 unregister_ip6_notifier:
@@ -8124,6 +8140,9 @@ void hdd_set_disconnect_status(struct hdd_adapter *adapter, bool status)
  */
 void hdd_unregister_notifiers(struct hdd_context *hdd_ctx)
 {
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+	fb_unregister_client(&hdd_ctx->fb_notifier);
+#endif
 	hdd_nud_unregister_netevent_notifier(hdd_ctx);
 	hdd_wlan_unregister_ip6_notifier(hdd_ctx);
 
