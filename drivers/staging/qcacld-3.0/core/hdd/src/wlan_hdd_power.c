@@ -84,6 +84,10 @@
 #include "wlan_pkt_capture_ucfg_api.h"
 #include "wlan_hdd_thermal.h"
 
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+#include <linux/fb.h>
+#endif
+
 /* Preprocessor definitions and constants */
 #ifdef QCA_WIFI_NAPIER_EMULATION
 #define HDD_SSR_BRING_UP_TIME 3000000
@@ -908,6 +912,84 @@ int wlan_hdd_ipv4_changed(struct notifier_block *nb,
 
 	return NOTIFY_DONE;
 }
+
+#if defined(CONFIG_FB_NOTIFY) || defined(CONFIG_FB)
+/**
+ * wlan_hdd_fb_notify() - Framebuffer event notifier callback
+ * @nb: Pointer to the notifier_block embedded in hdd_context
+ * @action: The framebuffer event (FB_EVENT_BLANK, FB_EARLY_EVENT_BLANK, etc.)
+ * @data: Pointer to struct fb_event containing blank state
+ *
+ * This callback listens for FB_EVENT_BLANK to detect screen blank / unblank
+ * transitions and toggles WLAN BMPS (Beacon Mode Power Save) accordingly:
+ *   - Screen OFF  (FB_BLANK_POWERDOWN) -> enable  BMPS on all STA adapters
+ *   - Screen ON   (FB_BLANK_UNBLANK)   -> disable BMPS on all STA adapters
+ *
+ * Return: NOTIFY_OK on handled events, NOTIFY_DONE otherwise
+ */
+int wlan_hdd_fb_notify(struct notifier_block *nb, unsigned long action,
+		       void *data)
+{
+	struct hdd_context *hdd_ctx = container_of(nb, struct hdd_context,
+						   fb_notifier);
+	struct fb_event *event = data;
+	struct hdd_adapter *adapter = NULL, *next_adapter = NULL;
+	int *blank;
+	mac_handle_t mac_handle;
+
+	if (!event || !event->data)
+		return NOTIFY_DONE;
+
+	/* Only handle actual blank change events */
+	if (action != FB_EVENT_BLANK)
+		return NOTIFY_DONE;
+
+	if (hdd_ctx->driver_status != DRIVER_MODULES_ENABLED) {
+		hdd_debug_rl("Driver not enabled; skipping FB notify");
+		return NOTIFY_DONE;
+	}
+
+	blank = event->data;
+	mac_handle = hdd_ctx->mac_handle;
+
+	hdd_for_each_adapter_dev_held_safe(hdd_ctx, adapter, next_adapter) {
+		if (adapter->device_mode != QDF_STA_MODE &&
+		    adapter->device_mode != QDF_P2P_CLIENT_MODE) {
+			dev_put(adapter->dev);
+			continue;
+		}
+
+		switch (*blank) {
+		case FB_BLANK_UNBLANK:
+			/* Screen ON -> disable BMPS for lower latency */
+			hdd_debug("FB UNBLANK: disabling BMPS on vdev %d",
+				  adapter->vdev_id);
+			sme_ps_disable_auto_ps_timer(mac_handle,
+						    adapter->vdev_id);
+			sme_ps_enable_disable(mac_handle,
+					      adapter->vdev_id,
+					      SME_PS_DISABLE);
+			break;
+
+		case FB_BLANK_POWERDOWN:
+			/* Screen OFF -> re-enable BMPS to save power */
+			hdd_debug("FB BLANK: enabling BMPS on vdev %d",
+				  adapter->vdev_id);
+			sme_ps_enable_disable(mac_handle,
+					      adapter->vdev_id,
+					      SME_PS_ENABLE);
+			break;
+
+		default:
+			break;
+		}
+
+		dev_put(adapter->dev);
+	}
+
+	return NOTIFY_OK;
+}
+#endif /* CONFIG_FB_NOTIFY || CONFIG_FB */
 
 #ifdef FEATURE_RUNTIME_PM
 int wlan_hdd_pm_qos_notify(struct notifier_block *nb, unsigned long curr_val,
