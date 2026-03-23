@@ -18,6 +18,8 @@
 #include "msm_camera_i2c_mux.h"
 #include <linux/regulator/rpm-smd-regulator.h>
 #include <linux/regulator/consumer.h>
+#include <linux/leds.h>
+
 #if defined(CONFIG_MACH_SONY_KIRIN) || \
 	defined(CONFIG_MACH_SONY_KIRIN_DSDS) || \
 	defined(CONFIG_MACH_SONY_MERMAID) || \
@@ -36,6 +38,45 @@
 
 static struct msm_camera_i2c_fn_t msm_sensor_cci_func_tbl;
 static struct msm_camera_i2c_fn_t msm_sensor_secure_func_tbl;
+
+extern struct list_head leds_list;
+extern struct rw_semaphore leds_list_lock;
+
+static struct led_classdev *red_led_cdev;
+static int rear_cam_count;
+static int front_cam_count;
+
+static void msm_sensor_update_led(void)
+{
+	struct led_classdev *led_cdev;
+	int target_brightness = 0;
+
+	if (!red_led_cdev) {
+		down_read(&leds_list_lock);
+		list_for_each_entry(led_cdev, &leds_list, node) {
+			if (!strcmp(led_cdev->name, "red")) {
+				red_led_cdev = led_cdev;
+				break;
+			}
+		}
+		up_read(&leds_list_lock);
+
+		if (!red_led_cdev) {
+			pr_err_once("%s: Failed to find red LED\n", __func__);
+			return;
+		}
+	}
+
+	if (front_cam_count > 0)
+		target_brightness = 150;
+	else if (rear_cam_count > 0)
+		target_brightness = 50;
+	else
+		target_brightness = 0;
+
+	led_set_brightness(red_led_cdev, target_brightness);
+}
+
 
 #if defined(CONFIG_MACH_SONY_KIRIN) || \
 	defined(CONFIG_MACH_SONY_KIRIN_DSDS) || \
@@ -148,6 +189,8 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_power_ctrl_t *power_info;
 	enum msm_camera_device_type_t sensor_device_type;
 	struct msm_camera_i2c_client *sensor_i2c_client;
+	int32_t rc = 0;
+
 
 	if (!s_ctrl) {
 		pr_err("%s:%d failed: s_ctrl %pK\n",
@@ -172,9 +215,21 @@ int msm_sensor_power_down(struct msm_sensor_ctrl_t *s_ctrl)
 	if (s_ctrl->is_secure)
 		msm_camera_tz_i2c_power_down(sensor_i2c_client);
 
-	return msm_camera_power_down(power_info, sensor_device_type,
+	rc = msm_camera_power_down(power_info, sensor_device_type,
 		sensor_i2c_client);
+
+	if (s_ctrl->sensordata->sensor_info->position == 0) {
+		if (rear_cam_count > 0)
+			rear_cam_count--;
+	} else if (s_ctrl->sensordata->sensor_info->position == 1) {
+		if (front_cam_count > 0)
+			front_cam_count--;
+	}
+	msm_sensor_update_led();
+
+	return rc;
 }
+
 
 int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 {
@@ -252,8 +307,17 @@ int msm_sensor_power_up(struct msm_sensor_ctrl_t *s_ctrl)
 		}
 	}
 
+	if (rc >= 0) {
+		if (s_ctrl->sensordata->sensor_info->position == 0)
+			rear_cam_count++;
+		else if (s_ctrl->sensordata->sensor_info->position == 1)
+			front_cam_count++;
+		msm_sensor_update_led();
+	}
+
 	return rc;
 }
+
 
 static uint16_t msm_sensor_id_by_mask(struct msm_sensor_ctrl_t *s_ctrl,
 	uint16_t chipid)
