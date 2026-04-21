@@ -526,7 +526,12 @@ static struct platform_driver sim_detect_driver = {
 	},
 };
 
-module_platform_driver(sim_detect_driver);
+static int __init sim_detect_init(void)
+{
+	return platform_driver_register(&sim_detect_driver);
+}
+
+late_initcall(sim_detect_init);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("SIM card detection driver");
