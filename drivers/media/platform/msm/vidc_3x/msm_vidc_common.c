@@ -101,6 +101,16 @@ static void handle_session_error(enum hal_command_response cmd, void *data);
 
 bool msm_comm_turbo_session(struct msm_vidc_inst *inst)
 {
+	/*
+	 * Force decoder sessions to vote the TURBO power mode (max Venus
+	 * core clock) for lowest decode latency on latency-critical HW
+	 * decode (cloud gaming via Moonlight/Sunshine). Without this the
+	 * load-based scaler picks ~SVS for 1080p60 (~174MHz needed vs
+	 * 518MHz TURBO available), leaving the core well under-clocked.
+	 * Encoders keep normal load-based scaling (they run server-side).
+	 */
+	if (inst->session_type == MSM_VIDC_DECODER)
+		return true;
 	return !!(inst->flags & VIDC_TURBO);
 }
 
