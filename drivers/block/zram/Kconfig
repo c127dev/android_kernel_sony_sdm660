@@ -29,6 +29,21 @@ config ZRAM_DEDUP
 	  enabling this option. Experiment shows the positive effect when
 	  the zram is used as blockdev and is used to store build output.
 
+config ZRAM_MULTI_COMP
+	bool "Multiple compression streams / idle-page recompression"
+	depends on ZRAM
+	default n
+	help
+	  Allow ZRAM to use a fast primary compression algorithm (e.g. lz4)
+	  for the hot path and one or more slower, denser secondary algorithms
+	  (e.g. zstd) to re-compress idle pages in place, via
+	  /sys/block/zramX/{recomp_algorithm,recompress}.
+
+	  This gives temperature-based tiering within a single zram device:
+	  hot pages stay cheap to fault back, idle pages get squeezed denser to
+	  save RAM. Backported logic from mainline 6.1; adapted to this tree's
+	  zram_entry layer. Only supported with ZRAM_DEDUP disabled.
+
 config ZRAM_WRITEBACK
        bool "Write back incompressible or idle page to backing device"
        depends on ZRAM
