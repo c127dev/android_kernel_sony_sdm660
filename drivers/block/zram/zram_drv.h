@@ -43,6 +43,10 @@
  */
 #define ZRAM_FLAG_SHIFT 24
 
+/* 2-bit field (after the page flags) holding the comp priority a slot's data
+ * was (re)compressed with, so reads decompress with the matching algorithm. */
+#define ZRAM_COMP_PRIORITY_MASK	0x3
+
 /* Flags for zram pages (table[page_no].flags) */
 enum zram_pageflags {
 	/* zram slot is locked */
@@ -52,6 +56,10 @@ enum zram_pageflags {
 	ZRAM_UNDER_WB,	/* page is under writeback */
 	ZRAM_HUGE,	/* Incompressible page */
 	ZRAM_IDLE,	/* not accessed page since last idle marking */
+	ZRAM_INCOMPRESSIBLE,	/* none of the algorithms could shrink it */
+
+	ZRAM_COMP_PRIORITY_BIT1, /* First bit of comp priority index */
+	ZRAM_COMP_PRIORITY_BIT2, /* Second bit of comp priority index */
 
 	__NR_ZRAM_PAGEFLAGS,
 };
@@ -109,10 +117,23 @@ struct zram_hash {
 	struct rb_root rb_root;
 };
 
+#ifdef CONFIG_ZRAM_MULTI_COMP
+#define ZRAM_PRIMARY_COMP	0U
+#define ZRAM_SECONDARY_COMP	1U
+#define ZRAM_MAX_COMPS		4U
+#else
+#define ZRAM_PRIMARY_COMP	0U
+#define ZRAM_SECONDARY_COMP	0U
+#define ZRAM_MAX_COMPS		1U
+#endif
+
 struct zram {
 	struct zram_table_entry *table;
 	struct zs_pool *mem_pool;
-	struct zcomp *comp;
+	struct zcomp *comps[ZRAM_MAX_COMPS];
+	/* secondary recompression algorithm names, indexed by priority */
+	const char *comp_algs[ZRAM_MAX_COMPS];
+	u32 num_active_comps;
 	struct gendisk *disk;
 	struct zram_hash *hash;
 	size_t hash_size;
