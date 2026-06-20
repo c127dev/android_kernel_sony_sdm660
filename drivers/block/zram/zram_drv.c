@@ -1209,6 +1209,71 @@ static ssize_t debug_stat_show(struct device *dev,
 	return ret;
 }
 
+#ifdef CONFIG_ZRAM_MULTI_COMP
+/*
+ * Per-priority occupancy: how many stored pages currently live at each
+ * compression priority and how many compressed bytes they take. prio 0 is the
+ * primary algorithm (comp_algorithm); prio >= 1 are the recompression algos
+ * (recomp_algorithm). Lets you see how much cold data actually got demoted to
+ * the dense secondary, and the effective ratio of each tier. Walks the whole
+ * slot table under per-slot locks, so it is a diagnostic read, not a hot path.
+ */
+static ssize_t recomp_stat_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct zram *zram = dev_to_zram(dev);
+	u64 pages[ZRAM_MAX_COMPS] = {};
+	u64 bytes[ZRAM_MAX_COMPS] = {};
+	unsigned long index, nr_pages;
+	ssize_t ret = 0;
+	u32 prio;
+
+	down_read(&zram->init_lock);
+	if (!init_done(zram)) {
+		up_read(&zram->init_lock);
+		return -EINVAL;
+	}
+
+	nr_pages = zram->disksize >> PAGE_SHIFT;
+	for (index = 0; index < nr_pages; index++) {
+		size_t size;
+
+		zram_slot_lock(zram, index);
+		if (!zram_allocated(zram, index) ||
+		    zram_test_flag(zram, index, ZRAM_SAME) ||
+		    zram_test_flag(zram, index, ZRAM_WB)) {
+			zram_slot_unlock(zram, index);
+			continue;
+		}
+		prio = zram_get_priority(zram, index);
+		size = zram_get_obj_size(zram, index);
+		zram_slot_unlock(zram, index);
+
+		if (prio >= ZRAM_MAX_COMPS)
+			prio = ZRAM_MAX_COMPS - 1;
+		pages[prio]++;
+		bytes[prio] += size;
+	}
+	up_read(&zram->init_lock);
+
+	for (prio = 0; prio < ZRAM_MAX_COMPS; prio++) {
+		const char *name = prio ? zram->comp_algs[prio] : zram->compressor;
+
+		/* skip empty recomp slots that were never configured */
+		if (!pages[prio] && (prio && !name))
+			continue;
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret,
+				"prio%u %-12s pages=%llu comp_bytes=%llu orig_bytes=%llu\n",
+				prio, name ? name : "none",
+				pages[prio], bytes[prio],
+				pages[prio] << PAGE_SHIFT);
+	}
+
+	return ret;
+}
+static DEVICE_ATTR_RO(recomp_stat);
+#endif
+
 static DEVICE_ATTR_RO(io_stat);
 static DEVICE_ATTR_RO(mm_stat);
 #ifdef CONFIG_ZRAM_WRITEBACK
@@ -2331,6 +2396,9 @@ static struct attribute *zram_disk_attrs[] = {
 	&dev_attr_use_dedup.attr,
 	&dev_attr_io_stat.attr,
 	&dev_attr_mm_stat.attr,
+#ifdef CONFIG_ZRAM_MULTI_COMP
+	&dev_attr_recomp_stat.attr,
+#endif
 #ifdef CONFIG_ZRAM_WRITEBACK
 	&dev_attr_bd_stat.attr,
 #endif
