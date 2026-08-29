@@ -1,0 +1,206 @@
+name: Build and Release Custom Boot Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Kernel source ref to build'
+        type: string
+        default: nitro-lineage-23.2
+  push:
+    # Registers the workflow with the Actions index. The resolve job gates on
+    # the event name, so a push never builds.
+    branches: [compiler]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-and-release
+  cancel-in-progress: false
+
+env:
+  DEVICE: pioneer
+
+jobs:
+  resolve:
+    name: Resolve LineageOS Build
+    runs-on: ubuntu-22.04
+    if: github.event_name == 'workflow_dispatch'
+    outputs:
+      lineage_date: ${{ steps.lineage.outputs.date }}
+      lineage_version: ${{ steps.lineage.outputs.version }}
+      boot_url: ${{ steps.lineage.outputs.boot_url }}
+
+    steps:
+      - name: Query LineageOS API for the latest official build
+        id: lineage
+        run: |
+          set -euo pipefail
+          API_URL="https://download.lineageos.org/api/v2/devices/${DEVICE}/builds"
+          # The API returns builds newest-first, so .[0] is the latest one.
+          BUILD=$(curl -sSfL "$API_URL" | jq -c '.[0]')
+
+          DATE=$(echo "$BUILD" | jq -r '.date')
+          VERSION=$(echo "$BUILD" | jq -r '.version')
+          BOOT_URL=$(echo "$BUILD" | jq -r '.files[] | select(.filename == "boot.img") | .url')
+
+          if [ -z "$DATE" ] || [ "$DATE" = "null" ] || [ -z "$BOOT_URL" ] || [ "$BOOT_URL" = "null" ]; then
+            echo "::error::Could not resolve the latest LineageOS build for ${DEVICE}"
+            exit 1
+          fi
+
+          echo "Latest official build: $VERSION / $DATE"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "boot_url=$BOOT_URL" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build Kernel and Repack Boot
+    needs: resolve
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref || 'nitro-lineage-23.2' }}
+
+      - name: Checkout build scripts
+        uses: actions/checkout@v5
+        with:
+          ref: compiler
+          path: .packaging
+
+      - name: Resolve source commit
+        id: src
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc libssl-dev zip curl jq unzip python3 git bison flex cpio gcc-aarch64-linux-gnu
+
+      - name: Fetch Magisk 26.4 & Extract magiskboot (x86_64)
+        run: |
+          echo "--- Downloading Latest Magisk ---"
+          MAGISK_URL="https://github.com/topjohnwu/Magisk/releases/download/v26.4/Magisk-v26.4.apk"
+
+          echo "Downloading: $MAGISK_URL"
+          curl -L -o magisk.apk "$MAGISK_URL"
+          unzip -o -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
+
+          echo "--- Extracted magiskboot ---"
+
+          find . -name "libmagiskboot.so" -exec sh -c 'mv "$0" "${0%/*}/magiskboot"' {} \;
+          chmod 755 magiskboot
+
+          echo "--- magiskboot ready ---"
+
+          ls -l magiskboot
+
+      - name: Fetch Latest LineageOS boot.img
+        run: |
+          echo "--- Downloading LineageOS boot.img (${{ needs.resolve.outputs.lineage_date }}) ---"
+          curl -L -o boot.img "${{ needs.resolve.outputs.boot_url }}"
+
+      - name: Unpack Boot Image
+        run: |
+          echo "--- Preparing Environment for Repacking ---"
+
+          sudo mkdir -p /mnt/ramdisk
+          sudo mount -t tmpfs -o size=256M tmpfs /mnt/ramdisk
+
+          sudo chown $USER:$USER /mnt/ramdisk
+
+          mv boot.img /mnt/ramdisk/
+          mv magiskboot /mnt/ramdisk/
+
+          cd /mnt/ramdisk
+
+          # Unpack the original boot image
+          ./magiskboot unpack boot.img
+
+      - name: Compile Kernel (build.sh)
+        run: |
+          cp /mnt/ramdisk/kernel ./kernel-old
+          chmod +x .packaging/build.sh
+          KERNEL_DIR="$GITHUB_WORKSPACE" USE_CCACHE=0 .packaging/build.sh
+
+      - name: Resolve Release Tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          PREFIX="v$(date -u +%Y.%m.%d)"
+
+          # Collect every tag already used today (releases + plain tags) and
+          # take the highest trailing counter, so same-day rebuilds bump .0 -> .1 -> .2 ...
+          TAGS=$( { curl -sSfL \
+                      -H "Authorization: Bearer $GH_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                    | jq -r '.[].tag_name'
+                    curl -sSfL \
+                      -H "Authorization: Bearer $GH_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${GITHUB_REPOSITORY}/tags?per_page=100" \
+                    | jq -r '.[].name'
+                  } | sort -u )
+
+          NEXT=0
+          while read -r t; do
+            case "$t" in
+              "$PREFIX".*) ;;
+              *) continue ;;
+            esac
+            N="${t##*.}"
+            case "$N" in
+              ''|*[!0-9]*) continue ;;
+            esac
+            if [ "$((N + 1))" -gt "$NEXT" ]; then
+              NEXT=$((N + 1))
+            fi
+          done <<< "$TAGS"
+
+          TAG="${PREFIX}.${NEXT}"
+          echo "Release tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Repack Boot Image
+        run: |
+          echo "--- Packing New Boot Image ---"
+          mv out/arch/arm64/boot/Image /mnt/ramdisk/kernel
+
+          cd /mnt/ramdisk
+          ./magiskboot repack boot.img new-boot.img
+
+          # Name the final boot image after the release tag
+          FINAL="boot-nitro-${DEVICE}-${{ steps.tag.outputs.tag }}.img"
+          mv new-boot.img "$GITHUB_WORKSPACE/$FINAL"
+
+          cd $GITHUB_WORKSPACE
+          sudo umount /mnt/ramdisk
+          echo "FINAL_BOOT=$FINAL" >> $GITHUB_ENV
+
+      - name: Upload Release
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          files: ${{ env.FINAL_BOOT }}
+          tag_name: ${{ steps.tag.outputs.tag }}
+          target_commitish: ${{ steps.src.outputs.sha }}
+          name: "Nitro Kernel ${{ steps.tag.outputs.tag }}"
+          body: |
+            LineageOS-Build: ${{ needs.resolve.outputs.lineage_date }}
+
+            Automated boot.img build with the Nitro custom kernel.
+
+            - LineageOS version: ${{ needs.resolve.outputs.lineage_version }}
+            - Official build date: ${{ needs.resolve.outputs.lineage_date }}
+            - Kernel commit: ${{ steps.src.outputs.sha }}
+            - Trigger: ${{ github.event_name }}
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
