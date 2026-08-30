@@ -69,6 +69,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.source_ref || 'nitro-lineage-23.2' }}
+          fetch-depth: 0
 
       - name: Checkout build scripts
         uses: actions/checkout@v5
@@ -87,11 +88,12 @@ jobs:
 
       - name: Fetch Magisk 26.4 & Extract magiskboot (x86_64)
         run: |
+          set -euo pipefail
           echo "--- Downloading Latest Magisk ---"
           MAGISK_URL="https://github.com/topjohnwu/Magisk/releases/download/v26.4/Magisk-v26.4.apk"
 
           echo "Downloading: $MAGISK_URL"
-          curl -L -o magisk.apk "$MAGISK_URL"
+          curl -fsSL -o magisk.apk "$MAGISK_URL"
           unzip -o -j magisk.apk "lib/x86_64/libmagiskboot.so" -d .
 
           echo "--- Extracted magiskboot ---"
@@ -105,11 +107,13 @@ jobs:
 
       - name: Fetch Latest LineageOS boot.img
         run: |
+          set -euo pipefail
           echo "--- Downloading LineageOS boot.img (${{ needs.resolve.outputs.lineage_date }}) ---"
-          curl -L -o boot.img "${{ needs.resolve.outputs.boot_url }}"
+          curl -fsSL -o boot.img "${{ needs.resolve.outputs.boot_url }}"
 
       - name: Unpack Boot Image
         run: |
+          set -euo pipefail
           echo "--- Preparing Environment for Repacking ---"
 
           sudo mkdir -p /mnt/ramdisk
@@ -127,6 +131,7 @@ jobs:
 
       - name: Compile Kernel (build.sh)
         run: |
+          set -euo pipefail
           cp /mnt/ramdisk/kernel ./kernel-old
           chmod +x .packaging/build.sh
           KERNEL_DIR="$GITHUB_WORKSPACE" USE_CCACHE=0 .packaging/build.sh
@@ -135,18 +140,35 @@ jobs:
         id: tag
         env:
           SOURCE_BRANCH: ${{ inputs.source_branch }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ steps.src.outputs.sha }}
         run: |
           set -euo pipefail
           # v<UTC date>.<run number>.<branch>: the run number is the build id,
           # unique per run, so same-day rebuilds never collide and the tag
-          # points at the run that produced it. Slashes are not tag material.
-          BRANCH=$(echo "${SOURCE_BRANCH}" | tr '/' '-')
-          TAG="v$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}.${BRANCH}"
+          # points at the run that produced it.
+          NAME="${SOURCE_BRANCH}"
+          # A dispatcher that pins source_ref to a commit and leaves
+          # source_branch alone would otherwise tag the wrong branch name.
+          if printf '%s' "${SOURCE_REF}" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            # No branch contains it, or the sha is unknown to the fetched
+            # refs: fall back rather than abort the build over a tag.
+            NAME=$(git branch -r --contains "${SOURCE_SHA}" --format '%(refname:lstrip=3)' \
+                   | grep -v '^HEAD$' | head -n1 || true)
+            NAME="${NAME:-$SOURCE_BRANCH}"
+          fi
+          # Only what a git tag and a docker tag both accept.
+          SLUG=$(printf '%s' "$NAME" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^[.-]*//;s/[.-]*$//')
+          TAG="v$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          if [ -n "$SLUG" ]; then
+            TAG="${TAG}.${SLUG}"
+          fi
           echo "Release tag: $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Repack Boot Image
         run: |
+          set -euo pipefail
           echo "--- Packing New Boot Image ---"
           mv out/arch/arm64/boot/Image /mnt/ramdisk/kernel
 
@@ -160,6 +182,13 @@ jobs:
           cd $GITHUB_WORKSPACE
           sudo umount /mnt/ramdisk
           echo "FINAL_BOOT=$FINAL" >> $GITHUB_ENV
+
+      - name: Upload Boot Image Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-${{ steps.tag.outputs.tag }}
+          path: ${{ env.FINAL_BOOT }}
+          if-no-files-found: error
 
       - name: Upload Release
         uses: softprops/action-gh-release@v2
