@@ -13,8 +13,9 @@ curl -X POST \
     -d '{"ref":"compiler"}'
 ```
 
-Input `source_ref` is the kernel ref to check out, default
-`nitro-lineage-23.2`.
+Inputs: `source_ref` is the kernel ref to check out and `source_branch` is the
+branch name that ends the release tag, both defaulting to `nitro-lineage-23.2`.
+The poller pins `source_ref` to a commit and passes the branch separately.
 
 `build.sh` compiles the kernel, `build_boot.sh` repacks a boot image locally.
 Both take the kernel tree from `KERNEL_DIR`, which defaults to the script's own
@@ -31,7 +32,7 @@ by default, its cache is `.ccache/` inside the kernel tree.
 
 The workflow downloads the newest official LineageOS `boot.img` for `pioneer`,
 compiles the kernel with `build.sh`, repacks it with `magiskboot` and publishes
-a release tagged `vYYYY.MM.DD.N`. The `LineageOS-Build:` line in the release
+a release tagged `vYYYY.MM.DD.<run number>.<branch>`. The `LineageOS-Build:` line in the release
 body is machine-read by the scheduled check; do not change its format.
 
 Every dispatch builds. Deciding whether a build is due belongs to the poller

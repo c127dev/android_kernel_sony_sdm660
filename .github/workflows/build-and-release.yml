@@ -7,6 +7,10 @@ on:
         description: 'Kernel source ref to build'
         type: string
         default: nitro-lineage-23.2
+      source_branch:
+        description: 'Branch name that ends the release tag'
+        type: string
+        default: nitro-lineage-23.2
   push:
     # Registers the workflow with the Actions index. The resolve job gates on
     # the event name, so a push never builds.
@@ -130,41 +134,14 @@ jobs:
       - name: Resolve Release Tag
         id: tag
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
         run: |
           set -euo pipefail
-          PREFIX="v$(date -u +%Y.%m.%d)"
-
-          # Collect every tag already used today (releases + plain tags) and
-          # take the highest trailing counter, so same-day rebuilds bump .0 -> .1 -> .2 ...
-          TAGS=$( { curl -sSfL \
-                      -H "Authorization: Bearer $GH_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-                    | jq -r '.[].tag_name'
-                    curl -sSfL \
-                      -H "Authorization: Bearer $GH_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      "https://api.github.com/repos/${GITHUB_REPOSITORY}/tags?per_page=100" \
-                    | jq -r '.[].name'
-                  } | sort -u )
-
-          NEXT=0
-          while read -r t; do
-            case "$t" in
-              "$PREFIX".*) ;;
-              *) continue ;;
-            esac
-            N="${t##*.}"
-            case "$N" in
-              ''|*[!0-9]*) continue ;;
-            esac
-            if [ "$((N + 1))" -gt "$NEXT" ]; then
-              NEXT=$((N + 1))
-            fi
-          done <<< "$TAGS"
-
-          TAG="${PREFIX}.${NEXT}"
+          # v<UTC date>.<run number>.<branch>: the run number is the build id,
+          # unique per run, so same-day rebuilds never collide and the tag
+          # points at the run that produced it. Slashes are not tag material.
+          BRANCH=$(echo "${SOURCE_BRANCH}" | tr '/' '-')
+          TAG="v$(date -u +%Y.%m.%d).${GITHUB_RUN_NUMBER}.${BRANCH}"
           echo "Release tag: $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
